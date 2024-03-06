@@ -1,0 +1,127 @@
+version: "3.9"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.0.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "32181:32181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 32181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-enterprise-kafka:6.0.0
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:32181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  kafka-create-topics:
+    image: confluentinc/cp-enterprise-kafka:6.0.0
+    depends_on:
+      - kafka
+    hostname: kafka-create-topics
+    command: ["bash", "./kafka/create-topics.sh"]
+    working_dir: /scripts
+    volumes:
+      - ./scripts:/scripts
+
+  # Database
+  db:
+    image: mysql:5.7
+    restart: always
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./scripts/mysql:/docker-entrypoint-initdb.d
+
+    command:
+      - '--enable-log-bin'
+      - '--server-id=369'
+      -  '--default-authentication-plugin=mysql_native_password'
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: yourdb
+      MYSQL_PASSWORD: password
+    networks:
+      - mysql-phpmyadmin-grafana
+
+  # phpmyadmin
+  phpmyadmin:
+    depends_on:
+      - db
+    image: phpmyadmin
+    restart: always
+    ports:
+      - "8090:80"
+    environment:
+      PMA_HOST: db
+      MYSQL_ROOT_PASSWORD: password
+    networks:
+      - mysql-phpmyadmin-grafana
+
+  db_seeder:
+    image: mysql:latest
+    volumes:
+      - ./scripts/mysql/mysql-init.sql:/mysql-init.sql
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "true"
+    entrypoint: [ "bash", "-c", "sleep 10 && mysql --user=root --host=db --password=password --port=3306 example_db < /mysql-init.sql && exit"]
+    networks:
+      - mysql-phpmyadmin-grafana
+    depends_on:
+      - db
+
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    networks:
+      - mysql-phpmyadmin-grafana
+
+  iot-service:
+    image: iot-service:01
+    container_name: iot-service
+    build:
+      context: ./iot-service
+      dockerfile: Dockerfile
+    restart: no
+    depends_on:
+      - kafka
+      - kafka-create-topics
+      - zookeeper
+
+  detection-service:
+    image: detection-service:01
+    container_name: detection-service
+    build:
+      context: ./detection-service
+      dockerfile: Dockerfile
+    restart: no
+    depends_on:
+      - iot-service
+
+networks:
+  mysql-phpmyadmin-grafana:
+
+volumes:
+  db_data:
+  grafana-storage: {}
